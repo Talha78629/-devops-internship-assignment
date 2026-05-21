@@ -1,0 +1,22 @@
+# Terraform local files
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+crash.log
+crash.*.log
+*.tfvars
+
+# OS / editor
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# App dependencies
+node_modules/
+__pycache__/
+*.pyc
+
+# Environment files
+.env
