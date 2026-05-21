@@ -1,112 +1,138 @@
-# DevOps Internship Assignment — GCP Terraform Deployment
+# DevOps Internship Assignment — GCP Terraform Multi-VM Deployment
 
-## Project Overview
+## Architecture
 
-This project deploys a multi-VM worker architecture on Google Cloud Platform using Terraform.
+```
+                          Internet
+                              │
+                    HTTP :8080│
+                              ▼
+               ┌──────────────────────────┐
+               │      api-gateway-vm      │
+               │  Public IP:  <assigned>  │
+               │  Private IP: 10.10.1.10  │
+               │  Port: 8080              │
+               └────────────┬─────────────┘
+                            │
+                  Internal HTTP (private subnet)
+                            │
+               ┌────────────▼─────────────┐
+               │     python-worker-vm     │
+               │  Public IP:  NONE        │
+               │  Private IP: 10.10.1.20  │
+               │  Port: 5000              │
+               └────────────┬─────────────┘
+                            │
+                  Internal HTTP (private subnet)
+                            │
+               ┌────────────▼─────────────┐
+               │   typescript-worker-vm   │
+               │  Public IP:  NONE        │
+               │  Private IP: 10.10.1.30  │
+               │  Port: 4000              │
+               └──────────────────────────┘
 
-The architecture includes:
+VPC: quickstart-vpc
+Subnet: quickstart-private-subnet (10.10.1.0/24)
+Cloud NAT: allows private VMs to reach the internet for package installs
+```
 
-- A custom VPC
-- A private subnet
-- Cloud Router and Cloud NAT
-- One public API Gateway VM
-- Two private worker VMs
-- Internal RPC-style communication between workers
-- A public JSON HTTP API exposed only through the API Gateway
-
-The API Gateway receives a JSON request, forwards it to the Python Worker, and the Python Worker calls the TypeScript Worker over the private subnet. The final response is returned as JSON.
-
----
-
-## Architecture Diagram
-
-```text
-Internet
-   |
-   | HTTP :8080
-   v
-+----------------------+
-| API Gateway VM       |
-| Public IP: Yes       |
-| Private IP: 10.10.1.10
-| Port: 8080           |
-+----------+-----------+
-           |
-           | Internal RPC / HTTP
-           v
-+----------------------+
-| Python Worker VM     |
-| Public IP: No        |
-| Private IP: 10.10.1.20
-| Port: 5000           |
-+----------+-----------+
-           |
-           | Internal RPC / HTTP
-           v
-+----------------------+
-| TypeScript Worker VM |
-| Public IP: No        |
-| Private IP: 10.10.1.30
-| Port: 4000           |
-+----------------------+
+**RPC Flow:**
+```
+Client → API Gateway :8080 → Python Worker :5000 → TypeScript Worker :4000 → JSON response
 ```
 
 ---
 
-## Infrastructure Created
+## Repository Structure
 
-Terraform provisions the following GCP resources:
-
-- VPC: `quickstart-vpc`
-- Subnet: `quickstart-private-subnet`
-- Cloud Router: `quickstart-router`
-- Cloud NAT: `quickstart-nat`
-- VM: `api-gateway-vm`
-- VM: `python-worker-vm`
-- VM: `typescript-worker-vm`
-- Firewall rules for:
-  - Public API access on port `8080`
-  - SSH access
-  - Internal worker communication
-  - Internal ICMP testing
-  - IAP SSH access
-
----
-
-## VM Layout
-
-| VM Name | Role | Private IP | Public IP |
-|---|---|---|---|
-| api-gateway-vm | Public JSON API Gateway | 10.10.1.10 | Yes |
-| python-worker-vm | Python Worker | 10.10.1.20 | No |
-| typescript-worker-vm | TypeScript Worker | 10.10.1.30 | No |
-
-Only the API Gateway VM is reachable from the public internet. The worker VMs run in the private subnet and do not have external IP addresses.
-
----
-
-## Worker Flow
-
-```text
-Client curl request
-   ↓
-API Gateway VM :8080
-   ↓
-Python Worker VM :5000
-   ↓
-TypeScript Worker VM :4000
-   ↓
-JSON response returned to client
+```
+.
+├── terraform/
+│   ├── main.tf                    # VPC, subnet, Cloud Router, Cloud NAT, VMs, firewall rules
+│   ├── variables.tf
+│   ├── outputs.tf
+│   └── startup-scripts/
+│       ├── api-gateway.sh         # Installs Node.js, creates Express app, registers systemd service
+│       ├── python-worker.sh       # Installs Python, creates Flask app, registers systemd service
+│       └── typescript-worker.sh   # Installs Node.js/ts-node, creates app, registers systemd service
+└── README.md
 ```
 
 ---
 
-## API Endpoint
+## Quick Start: Redeploy from Scratch
+
+### Prerequisites
+
+Install the following tools:
+- [Google Cloud CLI](https://cloud.google.com/sdk/docs/install)
+- [Terraform](https://developer.hashicorp.com/terraform/install) (>= 1.3)
+- Git
+
+### Step 1 — Authenticate with GCP
+
+```bash
+gcloud auth login
+gcloud auth application-default login
+gcloud config set project YOUR_PROJECT_ID
+```
+
+Enable required APIs:
+
+```bash
+gcloud services enable compute.googleapis.com iam.googleapis.com
+```
+
+### Step 2 — Clone the Repository
+
+```bash
+git clone https://github.com/Talha78629/-devops-internship-assignment.git
+cd -devops-internship-assignment
+```
+
+### Step 3 — Get Your Public IP (for SSH firewall allowlist)
+
+```bash
+curl -4 ifconfig.me
+```
+
+You'll use this as `YOUR_PUBLIC_IPV4/32` in the next step (e.g. `49.37.xx.xx/32`).
+
+### Step 4 — Deploy with Terraform
+
+```bash
+cd terraform
+terraform init
+terraform validate
+terraform apply \
+  -var="project_id=YOUR_PROJECT_ID" \
+  -var="ssh_source_ip=YOUR_PUBLIC_IPV4/32"
+```
+
+> **Windows CMD:**
+> ```cmd
+> terraform apply ^
+>   -var="project_id=YOUR_PROJECT_ID" ^
+>   -var="ssh_source_ip=YOUR_PUBLIC_IPV4/32"
+> ```
+
+Type `yes` when prompted. Deployment takes ~3–5 minutes including VM startup scripts.
+
+### Step 5 — Get the API Gateway IP
+
+```bash
+terraform output api_gateway_public_ip
+```
+
+---
+
+## API Usage
 
 ### Health Check
 
 ```bash
-curl http://<API_GATEWAY_PUBLIC_IP>:8080/
+curl http://API_GATEWAY_PUBLIC_IP:8080/
 ```
 
 Expected response:
@@ -118,31 +144,25 @@ Expected response:
 }
 ```
 
----
+### Inference Request
 
-## Inference API Request
-
-Replace `<API_GATEWAY_PUBLIC_IP>` with the Terraform output value.
-
-### Linux / Git Bash
+**Linux / macOS / Git Bash:**
 
 ```bash
-curl -X POST http://<API_GATEWAY_PUBLIC_IP>:8080/infer \
--H "Content-Type: application/json" \
--d '{"prompt":"Hello from DevOps assignment"}'
+curl -X POST http://API_GATEWAY_PUBLIC_IP:8080/infer \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Hello from DevOps assignment"}'
 ```
 
-### Windows CMD
+**Windows CMD:**
 
-```bash
-curl -X POST http://<API_GATEWAY_PUBLIC_IP>:8080/infer ^
--H "Content-Type: application/json" ^
--d "{\"prompt\":\"Hello from DevOps assignment\"}"
+```cmd
+curl -X POST http://API_GATEWAY_PUBLIC_IP:8080/infer ^
+  -H "Content-Type: application/json" ^
+  -d "{\"prompt\":\"Hello from DevOps assignment\"}"
 ```
 
----
-
-## Sample Response
+### Sample Response
 
 ```json
 {
@@ -163,263 +183,110 @@ curl -X POST http://<API_GATEWAY_PUBLIC_IP>:8080/infer ^
 
 ---
 
-## Deployment Scripts and Services
-
-Each VM is configured using a startup script.
-
-| VM | Startup Script | Service |
-|---|---|---|
-| API Gateway | `terraform/startup-scripts/api-gateway.sh` | `api-gateway.service` |
-| Python Worker | `terraform/startup-scripts/python-worker.sh` | `python-worker.service` |
-| TypeScript Worker | `terraform/startup-scripts/typescript-worker.sh` | `ts-worker.service` |
-
-The startup scripts install the required runtime, create the application files, install dependencies, and register systemd services.
-
----
-
-## Redeployment Instructions
-
-### 1. Prerequisites
-
-Install:
-
-- Google Cloud CLI
-- Terraform
-- Git
-
-Authenticate with GCP:
-
-```bash
-gcloud auth login
-gcloud auth application-default login
-```
-
-Set your project:
-
-```bash
-gcloud config set project <PROJECT_ID>
-```
-
-Enable required APIs:
-
-```bash
-gcloud services enable compute.googleapis.com
-gcloud services enable iam.googleapis.com
-```
-
----
-
-### 2. Clone the Repository
-
-```bash
-git clone https://github.com/Talha78629/-devops-internship-assignment.git
-cd -devops-internship-assignment
-```
-
----
-
-### 3. Get Public IPv4 Address
-
-```bash
-curl -4 ifconfig.me
-```
-
-Use the output as `<YOUR_PUBLIC_IPV4>/32`.
-
-Example:
-
-```text
-49.37.xx.xx/32
-```
-
----
-
-### 4. Deploy with Terraform
-
-```bash
-cd terraform
-terraform init
-terraform validate
-terraform apply \
--var="project_id=<PROJECT_ID>" \
--var="ssh_source_ip=<YOUR_PUBLIC_IPV4>/32"
-```
-
-For Windows CMD:
-
-```bash
-cd terraform
-terraform init
-terraform validate
-terraform apply ^
--var="project_id=<PROJECT_ID>" ^
--var="ssh_source_ip=<YOUR_PUBLIC_IPV4>/32"
-```
-
-Type `yes` when Terraform asks for confirmation.
-
----
-
-### 5. Get API Gateway Public IP
-
-```bash
-terraform output api_gateway_public_ip
-```
-
----
-
-### 6. Test the API
-
-```bash
-curl http://<API_GATEWAY_PUBLIC_IP>:8080/
-```
-
-Then test the full worker flow:
-
-```bash
-curl -X POST http://<API_GATEWAY_PUBLIC_IP>:8080/infer \
--H "Content-Type: application/json" \
--d '{"prompt":"Hello from DevOps assignment"}'
-```
-
----
-
 ## Network Hygiene Validation
 
-Check VM IPs:
+Verify that only the API Gateway has a public IP:
 
 ```bash
 gcloud compute instances list
 ```
 
-Expected result:
+Expected:
 
-```text
-api-gateway-vm        has external IP
-python-worker-vm      no external IP
-typescript-worker-vm  no external IP
+```
+NAME                     EXTERNAL_IP
+api-gateway-vm           <assigned>
+python-worker-vm         (none)
+typescript-worker-vm     (none)
 ```
 
-The worker VMs should not be reachable from the public internet.
-
-From a local machine, these commands should fail:
+These requests should **fail** (workers are not publicly reachable):
 
 ```bash
-curl http://10.10.1.20:5000/infer
-curl http://10.10.1.30:4000/process
+curl http://10.10.1.20:5000/infer    # times out — no public route
+curl http://10.10.1.30:4000/process  # times out — no public route
 ```
 
-Only the API Gateway endpoint should be publicly reachable:
+Only this should succeed:
 
 ```bash
-http://<API_GATEWAY_PUBLIC_IP>:8080
+curl http://API_GATEWAY_PUBLIC_IP:8080/
 ```
 
 ---
 
-## Debugging Commands
+## Debugging
 
-SSH into API Gateway:
+SSH into the API Gateway (the only VM with a public IP):
 
 ```bash
 gcloud compute ssh api-gateway-vm --zone=us-central1-a
 ```
 
-Check API Gateway service:
+Check service status:
 
 ```bash
 sudo systemctl status api-gateway
-sudo journalctl -u api-gateway -n 50
-```
-
-Check Python Worker service:
-
-```bash
 sudo systemctl status python-worker
-sudo journalctl -u python-worker -n 50
+sudo systemctl status ts-worker
 ```
 
-Check TypeScript Worker service:
+View recent logs:
 
 ```bash
-sudo systemctl status ts-worker
+sudo journalctl -u api-gateway -n 50
+sudo journalctl -u python-worker -n 50
 sudo journalctl -u ts-worker -n 50
 ```
 
 Check listening ports:
 
 ```bash
-sudo ss -tulnp | grep 8080
-sudo ss -tulnp | grep 5000
-sudo ss -tulnp | grep 4000
+sudo ss -tulnp | grep -E '8080|5000|4000'
 ```
 
-Test private connectivity from API Gateway:
+Test internal connectivity from the API Gateway:
 
 ```bash
 curl http://10.10.1.20:5000/docs
 curl -X POST http://10.10.1.30:4000/process \
--H "Content-Type: application/json" \
--d '{"prompt":"internal test"}'
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "internal test"}'
 ```
 
 ---
 
 ## Production Hardening
 
-Before putting this into production, I would harden the setup in the following ways:
+Before putting this stack in production, I would make the following changes:
 
-1. Place the API Gateway behind a managed HTTPS Load Balancer.
-2. Use TLS certificates instead of plain HTTP.
-3. Add API authentication using API keys, OAuth, JWT, or IAM-aware access.
-4. Restrict public access further using allowlisted IP ranges where possible.
-5. Use least-privilege service accounts for each VM.
-6. Move startup script logic into versioned images, containers, or Ansible playbooks.
-7. Store secrets and configuration in Google Secret Manager instead of scripts.
-8. Enable Cloud Logging and Cloud Monitoring for centralized observability.
-9. Add health checks and auto-healing instance groups.
-10. Store Terraform state remotely in a GCS bucket with versioning.
-11. Add CI/CD validation for Terraform format, validate, and plan.
-12. Add alerting for service failure, high CPU, memory pressure, and error rates.
+**Security and access control:** Place the API Gateway behind a managed HTTPS load balancer with a TLS certificate — plain HTTP over port 8080 is not acceptable for production traffic. Add API authentication (API keys, JWT, or GCP IAM-aware proxy) so the endpoint is not open to anyone. Where possible, restrict public ingress to known IP ranges. Assign least-privilege service accounts to each VM rather than relying on the default compute account.
+
+**Secrets management:** The startup scripts currently embed configuration inline. In production, secrets and environment config should be stored in Google Secret Manager and fetched at runtime. Startup script logic should be moved into versioned container images or Ansible playbooks so deployments are reproducible and auditable.
+
+**Observability and reliability:** Enable Cloud Logging and Cloud Monitoring for centralized log aggregation and metrics. Add uptime checks and alerting on service failure, high error rates, and resource pressure (CPU, memory). Replace standalone VMs with managed instance groups that have health checks and auto-healing enabled.
+
+**Infrastructure state:** Terraform state should be stored remotely in a GCS bucket with versioning enabled, rather than locally. Add a CI/CD pipeline that runs `terraform fmt`, `validate`, and `plan` on every pull request before any `apply`.
 
 ---
 
-## If the Model Were 100x Larger
+## Scaling to a 100x Larger Model
 
-If the model were 100x larger, I would change the architecture significantly.
+The current architecture uses small CPU-only VMs which are appropriate for lightweight request routing and simple compute. A 100x larger model would require a fundamentally different approach.
 
-Instead of running the model on small CPU-only VMs, I would use GPU-backed instances or a managed inference platform. A larger model would require more memory, faster disk, better networking, and possibly GPU acceleration for acceptable latency.
+**Compute:** The model-serving layer would need GPU-backed instances (e.g., `n1-standard` with attached A100s or `a2-highgpu` families) or a managed inference platform such as Vertex AI. Model loading time becomes significant at this scale, so workers should be kept warm rather than started on demand, and container images should have all dependencies and model weights preloaded.
 
-I would also separate inference into a dedicated scalable model-serving layer. The API Gateway would only handle request validation and routing, while model workers would run behind an internal load balancer or on GKE with autoscaling. For high traffic, I would introduce Pub/Sub or Cloud Tasks so requests can be queued, retried, and processed reliably.
+**Architecture:** The API Gateway would be separated from the inference layer entirely — it would handle only request validation, authentication, and routing. Model workers would run behind an internal load balancer, or on GKE with horizontal pod autoscaling triggered by queue depth or request latency. For high or bursty traffic, I would introduce Pub/Sub or Cloud Tasks to queue requests so they can be retried and processed reliably without dropping under load.
 
-For large models, model loading time and cold starts become important. I would keep model workers warm, use container images with preloaded dependencies, consider model quantization, and add horizontal scaling based on queue depth or request latency.
-
-If the workload required GPUs, I would use dedicated GPU node pools, monitor GPU utilization, and apply autoscaling carefully because GPU instances are expensive. I would also add batching where possible to improve throughput.
+**Efficiency:** At this scale, model quantization (INT8/INT4) and batching multiple requests into a single forward pass become important for throughput and cost. GPU utilization should be monitored closely since GPU instances are expensive, and autoscaling should be tuned carefully to avoid over-provisioning while still handling traffic spikes.
 
 ---
 
 ## Cleanup
 
-To destroy all resources:
-
 ```bash
 cd terraform
 terraform destroy \
--var="project_id=<PROJECT_ID>" \
--var="ssh_source_ip=<YOUR_PUBLIC_IPV4>/32"
+  -var="project_id=YOUR_PROJECT_ID" \
+  -var="ssh_source_ip=YOUR_PUBLIC_IPV4/32"
 ```
-
-For Windows CMD:
-
-```bash
-cd terraform
-terraform destroy ^
--var="project_id=<PROJECT_ID>" ^
--var="ssh_source_ip=<YOUR_PUBLIC_IPV4>/32"
-```
-
----
-
-## Notes
-
-This implementation demonstrates a reproducible multi-VM worker deployment on GCP using Terraform. The workers communicate over private IPs inside the subnet, while only the API Gateway exposes a public JSON HTTP endpoint.
